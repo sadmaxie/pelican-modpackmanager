@@ -16,7 +16,7 @@ class InstallModpackJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public int $timeout = 3600; // 60 min – includes backup, download, loader install, and verification
+    public int $timeout = 7200; // 120 min – includes backup, high-speed download, loader install, and verification
     public int $tries   = 1;    // No retry; installation is not idempotent
 
     public array $spec = [];

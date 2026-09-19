@@ -58,6 +58,7 @@ class ModpackManagerPlugin implements Plugin, HasPluginSettings
             'store_metadata'     => (bool) config('modpack-manager.store_metadata'),
             'navigation_sort'    => (int) config('modpack-manager.navigation_sort'),
             'remote_download_concurrency' => (int) config('modpack-manager.remote_download_concurrency'),
+            'turbo_download'     => (bool) config('modpack-manager.turbo_download.enabled', true),
         ];
     }
 
@@ -119,16 +120,21 @@ class ModpackManagerPlugin implements Plugin, HasPluginSettings
                         ->default(fn () => (int) config('modpack-manager.navigation_sort')),
                 ]),
 
-            Section::make('Downloads')
-                ->description('How many files each server downloads simultaneously when installing a modpack.')
+            Section::make('Downloads & Turbo Engine')
+                ->description('Configure download speeds and concurrency.')
                 ->schema([
+                    Toggle::make('turbo_download')
+                        ->label('Enable Turbo Download Engine (24 MB/s)')
+                        ->helperText('Uses browser headers and direct upload streaming to bypass CurseForge and CloudFront CDN throttling.')
+                        ->default(fn () => (bool) config('modpack-manager.turbo_download.enabled', true)),
+
                     TextInput::make('remote_download_concurrency')
                         ->label('Concurrent downloads')
                         ->numeric()
                         ->step(1)
                         ->minValue(1)
                         ->placeholder('3')
-                        ->helperText('Number of files pulled onto the server at once during install. Each file is fetched by Wings directly from the source (e.g. CurseForge\'s CDN), so this caps both Wings\' simultaneous remote downloads and concurrent CurseForge fetches. 3 is a safe default; raise it only if you know your Wings config and API limits allow more.')
+                        ->helperText('Number of files pulled onto the server at once during install. 3 is a safe default.')
                         ->default(fn () => (int) config('modpack-manager.remote_download_concurrency')),
                 ]),
 
@@ -172,6 +178,10 @@ class ModpackManagerPlugin implements Plugin, HasPluginSettings
 
         if (array_key_exists('remote_download_concurrency', $data)) {
             $values['MODPACK_MANAGER_REMOTE_DOWNLOAD_CONCURRENCY'] = (string) max(1, (int) $data['remote_download_concurrency']);
+        }
+
+        if (array_key_exists('turbo_download', $data)) {
+            $values['MODPACK_MANAGER_TURBO_DOWNLOAD'] = $data['turbo_download'] ? 'true' : 'false';
         }
 
         $this->writeToEnvironment($values);

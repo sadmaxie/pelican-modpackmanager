@@ -738,6 +738,142 @@ class ModpackInstallService
     private function stepDownload(ModpackInstall $record, string $url): void
     {
         $record->markStepRunning('download');
+        $record->appendLog('Starting download of the modpack archive…');
+        $record->appendLog("  Source: {$url}");
+
+        $turboEnabled = (bool) config('modpack-manager.turbo_download.enabled', true);
+        $downloadedViaTurbo = false;
+
+        if ($turboEnabled) {
+            try {
+                $downloadedViaTurbo = $this->tryTurboDownload($record, $url);
+            } catch (Throwable $e) {
+                $record->appendLog("  Turbo Downloader notice: {$e->getMessage()} — falling back to standard Wings daemon pull.");
+                Log::warning('[ModpackManager] Turbo download failed, falling back to pull', [
+                    'record' => $record->id,
+                    'error'  => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if (!$downloadedViaTurbo) {
+            $this->standardWingsDownload($record, $url);
+        }
+
+        $record->update(['progress' => 48]);
+        $record->markStepDone('download');
+    }
+
+    private function tryTurboDownload(ModpackInstall $record, string $url): bool
+    {
+        $server = $record->server;
+        if (!$server) {
+            return false;
+        }
+
+        $record->appendLog('  [Turbo Engine] Requesting upload authorization from node daemon…');
+
+        $response = $this->fileRepo->getHttpClient()->get("/api/servers/{$server->uuid}/files/upload");
+        $body = json_decode((string) $response->getBody(), true);
+        $uploadUrl = $body['attributes']['url'] ?? null;
+
+        if (!$uploadUrl) {
+            throw new RuntimeException('Daemon did not provide a signed upload URL.');
+        }
+
+        $record->appendLog('  [Turbo Engine] Downloading archive via high-speed browser engine…');
+
+        $tmpFile = tempnam(sys_get_temp_dir(), 'mpm_turbo_');
+        $fp = fopen($tmpFile, 'wb');
+        if (!$fp) {
+            throw new RuntimeException('Could not create temporary local buffer file.');
+        }
+
+        $lastLogged = 0;
+        $startTime = microtime(true);
+
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_FILE           => $fp,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 10,
+            CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_TIMEOUT        => 3600,
+            CURLOPT_NOPROGRESS     => false,
+            CURLOPT_PROGRESSFUNCTION => function ($resource, $downloadSize, $downloaded, $uploadSize, $uploaded) use ($record, &$lastLogged, $startTime): void {
+                $now = microtime(true);
+                if ($now - $lastLogged >= 5.0 && $downloaded > 0) {
+                    $lastLogged = $now;
+                    $elapsed = max(0.1, $now - $startTime);
+                    $speed = $downloaded / $elapsed;
+                    $speedStr = $this->humanBytes((int) $speed) . '/s';
+                    $percent = $downloadSize > 0 ? (int) (($downloaded / $downloadSize) * 100) : 0;
+                    $record->appendLog(sprintf(
+                        '  [Turbo Engine] Downloaded %s of %s (%d%% at %s)',
+                        $this->humanBytes((int) $downloaded),
+                        $downloadSize > 0 ? $this->humanBytes((int) $downloadSize) : 'unknown',
+                        $percent,
+                        $speedStr
+                    ));
+                    $record->update(['progress' => min(45, 26 + (int) ($percent * 0.19))]);
+                }
+            },
+        ]);
+
+        $success = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
+        curl_close($ch);
+        fclose($fp);
+
+        if (!$success || $httpCode < 200 || $httpCode >= 300) {
+            @unlink($tmpFile);
+            throw new RuntimeException("Turbo cURL download failed (HTTP {$httpCode}): {$curlError}");
+        }
+
+        $fileSize = filesize($tmpFile);
+        if ($fileSize <= 1024) {
+            @unlink($tmpFile);
+            throw new RuntimeException("Downloaded file is too small or empty ({$fileSize} bytes).");
+        }
+
+        $elapsedTotal = max(0.1, microtime(true) - $startTime);
+        $avgSpeed = $this->humanBytes((int) ($fileSize / $elapsedTotal)) . '/s';
+        $record->appendLog(sprintf('  [Turbo Engine] Download completed in %.1f s (%s) — pushing to server…', $elapsedTotal, $avgSpeed));
+
+        $upCh = curl_init($uploadUrl);
+        $cFile = new \CURLFile($tmpFile, 'application/zip', self::ARCHIVE_NAME);
+        curl_setopt_array($upCh, [
+            CURLOPT_POST           => true,
+            CURLOPT_POSTFIELDS     => ['files' => $cFile],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 600,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => 0,
+        ]);
+
+        $upRes = curl_exec($upCh);
+        $upCode = curl_getinfo($upCh, CURLINFO_HTTP_CODE);
+        $upError = curl_error($upCh);
+        curl_close($upCh);
+        @unlink($tmpFile);
+
+        if ($upCode < 200 || $upCode >= 300) {
+            throw new RuntimeException("Failed to push archive to server daemon (HTTP {$upCode}): {$upError}");
+        }
+
+        $remoteSize = $this->remoteFileSize('/', self::ARCHIVE_NAME);
+        if ($remoteSize === null || $remoteSize <= 0) {
+            throw new RuntimeException('Archive pushed but not found on server file listing.');
+        }
+
+        $record->appendLog('  [Turbo Engine] Archive successfully transferred to server: ' . $this->humanBytes($remoteSize));
+        return true;
+    }
+
+    private function standardWingsDownload(ModpackInstall $record, string $url): void
+    {
         $record->appendLog('Telling Wings to download the modpack archive…');
         $record->appendLog("  Source: {$url}");
 
@@ -746,7 +882,7 @@ class ModpackInstallService
             'foreground' => false,
         ]);
 
-        $deadline = time() + 600;
+        $deadline = time() + 3600; // 60 min safety margin
         $lastSize = -1;
         $stable   = 0;
 
@@ -779,8 +915,22 @@ class ModpackInstallService
         }
 
         $record->appendLog('  Download complete: ' . $this->humanBytes($lastSize));
-        $record->update(['progress' => 48]);
-        $record->markStepDone('download');
+    }
+
+    private function sanitizeShellScripts(ModpackInstall $record): void
+    {
+        foreach (['startserver.sh', 'run.sh', 'start.sh', 'Install.sh'] as $script) {
+            if ($this->remotePathExists('/' . $script)) {
+                try {
+                    $content = (string) $this->fileRepo->getContent('/' . $script, 1024 * 1024);
+                    if (str_contains($content, "\r\n")) {
+                        $sanitized = str_replace("\r\n", "\n", $content);
+                        $this->fileRepo->putContent('/' . $script, $sanitized);
+                        $record->appendLog("  Sanitized {$script}: normalized CRLF to Linux LF line endings.");
+                    }
+                } catch (Throwable) {}
+            }
+        }
     }
 
     private function stepExtract(ModpackInstall $record): void
@@ -791,6 +941,7 @@ class ModpackInstallService
         $this->fileRepo->decompressFile('/', self::ARCHIVE_NAME);
         $record->appendLog('  Extraction complete.');
         $this->repairExtractedPermissions($record);
+        $this->sanitizeShellScripts($record);
 
         $record->update(['progress' => 58]);
         $record->markStepDone('extract');

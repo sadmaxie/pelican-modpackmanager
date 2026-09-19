@@ -30,7 +30,7 @@ class ModpackBrowserPage extends Page
      * treated as dead (worker crashed/stopped). Longer than the worst-case backup
      * (15 min) + download waits so a slow-but-live install is never killed.
      */
-    private const STALE_AFTER_SECONDS = 1200; // 20 minutes
+    private const STALE_AFTER_SECONDS = 3600; // 60 minutes (allows large downloads without prematurely marking dead)
 
     /**
      * Subuser permission required to view this page and install/update modpacks.

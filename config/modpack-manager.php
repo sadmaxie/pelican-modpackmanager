@@ -70,6 +70,12 @@ return [
     // persisted as MODPACK_MANAGER_NAV_SORT.
     'navigation_sort' => (int) env('MODPACK_MANAGER_NAV_SORT', 50),
 
+    // High-speed Turbo Download engine: bypasses CDN/CloudFront throttling using
+    // realistic browser headers and direct upload streaming.
+    'turbo_download' => [
+        'enabled' => filter_var(env('MODPACK_MANAGER_TURBO_DOWNLOAD', true), FILTER_VALIDATE_BOOLEAN),
+    ],
+
     // Max download size in MB before job times out
     'download_timeout' => 300,
 
