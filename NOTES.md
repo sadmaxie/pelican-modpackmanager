@@ -1,5 +1,22 @@
 # Pelican Modpack Manager — Developer Notes
 
+## 1.7.0
+
+### Turbo Download Engine & Performance
+- Resolved CurseForge / CloudFront throttling where Go HTTP clients were throttled to ~280 kB/s.
+- Integrated high-speed browser-engine emulation with streaming cURL and direct node daemon upload streaming, achieving download speeds of 24+ MB/s.
+- Added graceful fallback to standard Wings daemon pull with automatic error capture.
+- Extended download watchdog deadline to 3,600s (60 minutes).
+- Extended job queue execution timeout to 7,200s (2 hours) to support large modpack downloads without worker termination.
+- Extended stale install detection window to 3,600s.
+
+### Linux Shell Script Sanitization
+- Added automatic line-ending converter for extracted shell scripts (`startserver.sh`, `run.sh`, `start.sh`, `Install.sh`).
+- Strips Windows CRLF (`\r\n`) and normalizes to Unix LF (`\n`), eliminating `/bin/bash^M: bad interpreter` container crashes.
+
+### Configuration & Settings
+- Added `MODPACK_MANAGER_TURBO_DOWNLOAD` configuration option and UI toggle in the Filament Admin Settings panel.
+
 ## 1.6.9
 
 ### Automatic loader and egg handling
