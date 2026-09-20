@@ -772,14 +772,7 @@ class ModpackInstallService
         }
 
         $record->appendLog('  [Turbo Engine] Requesting upload authorization from node daemon…');
-
-        $response = $this->fileRepo->getHttpClient()->get("/api/servers/{$server->uuid}/files/upload");
-        $body = json_decode((string) $response->getBody(), true);
-        $uploadUrl = $body['attributes']['url'] ?? null;
-
-        if (!$uploadUrl) {
-            throw new RuntimeException('Daemon did not provide a signed upload URL.');
-        }
+        $uploadUrl = $this->getDaemonUploadUrl($server);
 
         $record->appendLog('  [Turbo Engine] Downloading archive via high-speed browser engine…');
 
@@ -870,6 +863,30 @@ class ModpackInstallService
 
         $record->appendLog('  [Turbo Engine] Archive successfully transferred to server: ' . $this->humanBytes($remoteSize));
         return true;
+    }
+
+    private function getDaemonUploadUrl(Server $server): string
+    {
+        $node = $server->node ?? \App\Models\Node::find($server->node_id);
+        if (!$node) {
+            throw new RuntimeException('Server node could not be resolved.');
+        }
+
+        if (class_exists(\App\Services\Nodes\NodeJWTService::class)) {
+            $jwtService = app(\App\Services\Nodes\NodeJWTService::class);
+            $user = $server->user ?? \App\Models\User::find($server->user_id) ?? \App\Models\User::first();
+
+            $token = $jwtService
+                ->setExpiresAt(\Carbon\CarbonImmutable::now()->addMinutes(30))
+                ->setUser($user)
+                ->setClaims(['server_uuid' => $server->uuid])
+                ->handle($node, ($user?->id ?? 1) . $server->uuid);
+
+            $baseUrl = rtrim($node->getConnectionAddress(), '/');
+            return "{$baseUrl}/upload/file?token={$token->toString()}&directory=/";
+        }
+
+        throw new RuntimeException('NodeJWTService is not available.');
     }
 
     private function standardWingsDownload(ModpackInstall $record, string $url): void
